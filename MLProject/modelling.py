@@ -46,6 +46,23 @@ def save_confusion_matrix(y_true, y_pred, out_path: str):
     plt.close()
 
 
+def ensure_active_run():
+    """
+    Saat dijalankan via `mlflow run`, MLflow Projects biasanya sudah membuat run_id
+    dan menyimpannya di env var MLFLOW_RUN_ID, tapi belum menjadi active run di proses python.
+    Jadi kita attach run itu biar logging tidak mismatch.
+    """
+    run_id = os.environ.get("MLFLOW_RUN_ID")
+    if run_id:
+        # attach ke run yang sudah dibuat oleh MLflow Projects
+        mlflow.start_run(run_id=run_id)
+        return True
+    else:
+        # fallback kalau dijalankan manual (python modelling.py)
+        mlflow.start_run()
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", required=True)
@@ -54,58 +71,60 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    # Tracking lokal (CI). Boleh dibiarkan default.
-    # mlflow.set_tracking_uri("file:./mlruns")
+    # JANGAN set_experiment saat pakai MLflow Projects (lebih aman via CLI),
+    # tapi kalau dijalankan manual, ini tetap oke.
+    if not os.environ.get("MLFLOW_RUN_ID"):
+        mlflow.set_experiment("Workflow-CI-Training")
 
-    mlflow.set_experiment("Workflow-CI-Training")
+    attached = ensure_active_run()
 
-    X_train, X_test, y_train, y_test = load_data(args.data_dir)
+    try:
+        X_train, X_test, y_train, y_test = load_data(args.data_dir)
 
-    model = LogisticRegression(max_iter=2000, solver="lbfgs")
+        model = LogisticRegression(max_iter=2000, solver="lbfgs")
+        model.fit(X_train, y_train)
 
-    # Train
-    model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        y_proba = model.predict_proba(X_test)[:, 1]
 
-    # Predict
-    y_pred = model.predict(X_test)
-    y_proba = model.predict_proba(X_test)[:, 1]
+        metrics = {
+            "test_accuracy": float(accuracy_score(y_test, y_pred)),
+            "test_precision": float(precision_score(y_test, y_pred, zero_division=0)),
+            "test_recall": float(recall_score(y_test, y_pred, zero_division=0)),
+            "test_f1": float(f1_score(y_test, y_pred, zero_division=0)),
+            "test_roc_auc": float(roc_auc_score(y_test, y_proba)),
+        }
 
-    metrics = {
-        "test_accuracy": float(accuracy_score(y_test, y_pred)),
-        "test_precision": float(precision_score(y_test, y_pred, zero_division=0)),
-        "test_recall": float(recall_score(y_test, y_pred, zero_division=0)),
-        "test_f1": float(f1_score(y_test, y_pred, zero_division=0)),
-        "test_roc_auc": float(roc_auc_score(y_test, y_proba)),
-    }
+        mlflow.log_params({
+            "model": "LogisticRegression",
+            "max_iter": 2000,
+            "solver": "lbfgs",
+        })
+        for k, v in metrics.items():
+            mlflow.log_metric(k, v)
 
-    # ✅ IMPORTANT: JANGAN start_run() DI SINI.
-    # Karena saat dipanggil via `mlflow run`, run sudah aktif.
-    mlflow.log_params({
-        "model": "LogisticRegression",
-        "max_iter": 2000,
-        "solver": "lbfgs",
-    })
-    for k, v in metrics.items():
-        mlflow.log_metric(k, v)
+        # Save outputs (local)
+        model_path = os.path.join(args.out_dir, "model.pkl")
+        joblib.dump(model, model_path)
 
-    # Save local outputs
-    model_path = os.path.join(args.out_dir, "model.pkl")
-    joblib.dump(model, model_path)
+        metrics_path = os.path.join(args.out_dir, "metrics.json")
+        with open(metrics_path, "w", encoding="utf-8") as f:
+            json.dump(metrics, f, indent=2)
 
-    metrics_path = os.path.join(args.out_dir, "metrics.json")
-    with open(metrics_path, "w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=2)
+        cm_path = os.path.join(args.out_dir, "confusion_matrix.png")
+        save_confusion_matrix(y_test, y_pred, cm_path)
 
-    cm_path = os.path.join(args.out_dir, "confusion_matrix.png")
-    save_confusion_matrix(y_test, y_pred, cm_path)
+        # Log artifacts
+        mlflow.sklearn.log_model(model, artifact_path="model")
+        mlflow.log_artifacts(args.out_dir, artifact_path="outputs")
 
-    # Log to MLflow artifacts
-    mlflow.sklearn.log_model(model, artifact_path="model")
-    mlflow.log_artifacts(args.out_dir, artifact_path="outputs")
+        print("✅ Training selesai.")
+        print("Metrics:", metrics)
+        print("Outputs saved to:", args.out_dir)
 
-    print("✅ Training selesai.")
-    print("Metrics:", metrics)
-    print("Outputs saved to:", args.out_dir)
+    finally:
+        # kalau kita yang start_run (attached maupun fallback), tetap end_run biar clean
+        mlflow.end_run()
 
 
 if __name__ == "__main__":
