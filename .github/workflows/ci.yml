@@ -15,19 +15,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      # ✅ Penting: ini yang bikin conda tersedia sehingga mlflow run tidak gagal "activate not found"
+      - name: Setup Miniconda
+        uses: conda-incubator/setup-miniconda@v3
         with:
-          python-version: "3.10"
+          auto-update-conda: true
+          python-version: "3.12"
+          activate-environment: ""
+          use-mamba: true
 
-      - name: Install MLflow
+      - name: Install MLflow (runner)
+        shell: bash -l {0}
         run: |
           python -m pip install --upgrade pip
-          pip install mlflow
+          pip install mlflow==2.19.0
+
+      - name: Debug - list folders
+        shell: bash -l {0}
+        run: |
+          ls -la
+          ls -la MLProject
+          ls -la MLProject/german_credit_data_preprocessing
 
       - name: Run MLflow Project (retrain)
+        shell: bash -l {0}
         run: |
-          mlflow run MLProject -P data_dir=german_credit_data_preprocessing -P out_dir=outputs
+          mlflow run ./MLProject \
+            -P data_dir=./MLProject/german_credit_data_preprocessing \
+            -P out_dir=./outputs
 
       - name: Upload training outputs artifact
         uses: actions/upload-artifact@v4
@@ -35,6 +50,7 @@ jobs:
           name: outputs
           path: outputs
 
+      # ✅ Advance: push Docker image ke Docker Hub
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -42,12 +58,13 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push Docker image
+        shell: bash -l {0}
         env:
           IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/german-credit-ci
           GIT_SHA: ${{ github.sha }}
         run: |
           cat > Dockerfile << 'EOF'
-          FROM python:3.10-slim
+          FROM python:3.12-slim
           WORKDIR /app
           COPY outputs/ /app/outputs/
           RUN pip install --no-cache-dir joblib numpy pandas scikit-learn
