@@ -15,13 +15,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ✅ Penting: ini yang bikin conda tersedia sehingga mlflow run tidak gagal "activate not found"
+      # ✅ Install Miniconda (tanpa python-version & activate env)
       - name: Setup Miniconda
         uses: conda-incubator/setup-miniconda@v3
         with:
           auto-update-conda: true
-          python-version: "3.12"
-          activate-environment: ""
           use-mamba: true
 
       - name: Install MLflow (runner)
@@ -30,13 +28,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install mlflow==2.19.0
 
-      - name: Debug - list folders
+      - name: Debug structure
         shell: bash -l {0}
         run: |
           ls -la
           ls -la MLProject
           ls -la MLProject/german_credit_data_preprocessing
 
+      # ✅ MLflow akan create & activate env dari conda.yaml sendiri
       - name: Run MLflow Project (retrain)
         shell: bash -l {0}
         run: |
@@ -44,34 +43,8 @@ jobs:
             -P data_dir=./MLProject/german_credit_data_preprocessing \
             -P out_dir=./outputs
 
-      - name: Upload training outputs artifact
+      - name: Upload outputs artifact
         uses: actions/upload-artifact@v4
         with:
           name: outputs
           path: outputs
-
-      # ✅ Advance: push Docker image ke Docker Hub
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push Docker image
-        shell: bash -l {0}
-        env:
-          IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/german-credit-ci
-          GIT_SHA: ${{ github.sha }}
-        run: |
-          cat > Dockerfile << 'EOF'
-          FROM python:3.12-slim
-          WORKDIR /app
-          COPY outputs/ /app/outputs/
-          RUN pip install --no-cache-dir joblib numpy pandas scikit-learn
-          CMD ["python","-c","import joblib; m=joblib.load('outputs/model.joblib'); print('Model loaded:', type(m))"]
-          EOF
-
-          docker build -t "$IMAGE_NAME:latest" .
-          docker tag "$IMAGE_NAME:latest" "$IMAGE_NAME:$GIT_SHA"
-          docker push "$IMAGE_NAME:latest"
-          docker push "$IMAGE_NAME:$GIT_SHA"
