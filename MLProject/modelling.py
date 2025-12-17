@@ -1,7 +1,6 @@
+import argparse
 import os
 import json
-import argparse
-import joblib
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -12,56 +11,28 @@ import mlflow.sklearn
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score, roc_auc_score,
-    confusion_matrix, ConfusionMatrixDisplay
+    confusion_matrix, ConfusionMatrixDisplay, RocCurveDisplay, PrecisionRecallDisplay
 )
 
-
 def load_data(data_dir: str):
+    # data_dir harus folder yang berisi X_train.npy dst
     if not os.path.isdir(data_dir):
-        raise NotADirectoryError(f"data_dir harus folder. Diterima: {data_dir}")
+        raise NotADirectoryError(
+            f"data_dir harus folder. Diterima: {data_dir}"
+        )
 
-    x_train_path = os.path.join(data_dir, "X_train.npy")
-    x_test_path = os.path.join(data_dir, "X_test.npy")
-    y_train_path = os.path.join(data_dir, "y_train.csv")
-    y_test_path = os.path.join(data_dir, "y_test.csv")
-
-    for p in [x_train_path, x_test_path, y_train_path, y_test_path]:
-        if not os.path.exists(p):
-            raise FileNotFoundError(f"File tidak ditemukan: {p}")
-
-    X_train = np.load(x_train_path, allow_pickle=False)
-    X_test = np.load(x_test_path, allow_pickle=False)
-    y_train = pd.read_csv(y_train_path).squeeze().to_numpy()
-    y_test = pd.read_csv(y_test_path).squeeze().to_numpy()
+    X_train = np.load(os.path.join(data_dir, "X_train.npy"))
+    X_test  = np.load(os.path.join(data_dir, "X_test.npy"))
+    y_train = pd.read_csv(os.path.join(data_dir, "y_train.csv")).squeeze().values
+    y_test  = pd.read_csv(os.path.join(data_dir, "y_test.csv")).squeeze().values
     return X_train, X_test, y_train, y_test
 
+def ensure_dir(path: str):
+    os.makedirs(path, exist_ok=True)
 
-def save_confusion_matrix(y_true, y_pred, out_path: str):
-    cm = confusion_matrix(y_true, y_pred)
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm)
-    disp.plot(values_format="d")
-    plt.title("Confusion Matrix (Test)")
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=150)
-    plt.close()
-
-
-def ensure_active_run():
-    """
-    Saat dijalankan via `mlflow run`, MLflow Projects biasanya sudah membuat run_id
-    dan menyimpannya di env var MLFLOW_RUN_ID, tapi belum menjadi active run di proses python.
-    Jadi kita attach run itu biar logging tidak mismatch.
-    """
-    run_id = os.environ.get("MLFLOW_RUN_ID")
-    if run_id:
-        # attach ke run yang sudah dibuat oleh MLflow Projects
-        mlflow.start_run(run_id=run_id)
-        return True
-    else:
-        # fallback kalau dijalankan manual (python modelling.py)
-        mlflow.start_run()
-        return False
-
+def save_json(obj, path: str):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -69,63 +40,96 @@ def main():
     parser.add_argument("--out-dir", required=True)
     args = parser.parse_args()
 
-    os.makedirs(args.out_dir, exist_ok=True)
+    out_dir = args.out_dir
+    ensure_dir(out_dir)
 
-    # JANGAN set_experiment saat pakai MLflow Projects (lebih aman via CLI),
-    # tapi kalau dijalankan manual, ini tetap oke.
-    if not os.environ.get("MLFLOW_RUN_ID"):
-        mlflow.set_experiment("Workflow-CI-Training")
+    X_train, X_test, y_train, y_test = load_data(args.data_dir)
 
-    attached = ensure_active_run()
+    # ===== TRAIN =====
+    model = LogisticRegression(
+        max_iter=2000,
+        solver="liblinear",
+        random_state=42
+    )
 
-    try:
-        X_train, X_test, y_train, y_test = load_data(args.data_dir)
+    # PENTING:
+    # - JANGAN mlflow.start_run() di sini jika dijalankan via `mlflow run`
+    # - `mlflow run` sudah mengaktifkan run (MLFLOW_RUN_ID)
+    model.fit(X_train, y_train)
 
-        model = LogisticRegression(max_iter=2000, solver="lbfgs")
-        model.fit(X_train, y_train)
+    # ===== EVAL =====
+    y_pred = model.predict(X_test)
+    y_proba = model.predict_proba(X_test)[:, 1]
 
-        y_pred = model.predict(X_test)
-        y_proba = model.predict_proba(X_test)[:, 1]
+    metrics = {
+        "test_accuracy": float(accuracy_score(y_test, y_pred)),
+        "test_precision": float(precision_score(y_test, y_pred, zero_division=0)),
+        "test_recall": float(recall_score(y_test, y_pred, zero_division=0)),
+        "test_f1": float(f1_score(y_test, y_pred, zero_division=0)),
+        "test_roc_auc": float(roc_auc_score(y_test, y_proba)),
+    }
 
-        metrics = {
-            "test_accuracy": float(accuracy_score(y_test, y_pred)),
-            "test_precision": float(precision_score(y_test, y_pred, zero_division=0)),
-            "test_recall": float(recall_score(y_test, y_pred, zero_division=0)),
-            "test_f1": float(f1_score(y_test, y_pred, zero_division=0)),
-            "test_roc_auc": float(roc_auc_score(y_test, y_proba)),
-        }
+    # ===== LOG PARAMS/METRICS =====
+    mlflow.log_params({
+        "model_type": "LogisticRegression",
+        "solver": "liblinear",
+        "max_iter": 2000,
+        "random_state": 42,
+    })
+    for k, v in metrics.items():
+        mlflow.log_metric(k, v)
 
-        mlflow.log_params({
-            "model": "LogisticRegression",
-            "max_iter": 2000,
-            "solver": "lbfgs",
-        })
-        for k, v in metrics.items():
-            mlflow.log_metric(k, v)
+    # ===== ARTIFACTS (gambar) =====
+    cm_path = os.path.join(out_dir, "confusion_matrix.png")
+    disp = ConfusionMatrixDisplay(confusion_matrix=confusion_matrix(y_test, y_pred))
+    disp.plot(values_format="d")
+    plt.title("Confusion Matrix (Test)")
+    plt.tight_layout()
+    plt.savefig(cm_path, dpi=150)
+    plt.close()
+    mlflow.log_artifact(cm_path)
 
-        # Save outputs (local)
-        model_path = os.path.join(args.out_dir, "model.pkl")
-        joblib.dump(model, model_path)
+    roc_path = os.path.join(out_dir, "roc_curve.png")
+    RocCurveDisplay.from_estimator(model, X_test, y_test)
+    plt.title("ROC Curve (Test)")
+    plt.tight_layout()
+    plt.savefig(roc_path, dpi=150)
+    plt.close()
+    mlflow.log_artifact(roc_path)
 
-        metrics_path = os.path.join(args.out_dir, "metrics.json")
-        with open(metrics_path, "w", encoding="utf-8") as f:
-            json.dump(metrics, f, indent=2)
+    pr_path = os.path.join(out_dir, "pr_curve.png")
+    PrecisionRecallDisplay.from_estimator(model, X_test, y_test)
+    plt.title("Precision-Recall Curve (Test)")
+    plt.tight_layout()
+    plt.savefig(pr_path, dpi=150)
+    plt.close()
+    mlflow.log_artifact(pr_path)
 
-        cm_path = os.path.join(args.out_dir, "confusion_matrix.png")
-        save_confusion_matrix(y_test, y_pred, cm_path)
+    # ===== SAVE MODEL ARTIFACT =====
+    # Ini penting untuk Docker build (nanti model_uri = runs:/RUN_ID/model)
+    mlflow.sklearn.log_model(
+        sk_model=model,
+        artifact_path="model",
+        pip_requirements=[
+            "mlflow==2.19.0",
+            "scikit-learn==1.5.2",
+            "numpy",
+            "pandas",
+            "matplotlib",
+            "joblib",
+        ],
+    )
 
-        # Log artifacts
-        mlflow.sklearn.log_model(model, artifact_path="model")
-        mlflow.log_artifacts(args.out_dir, artifact_path="outputs")
+    # ===== SAVE OUTPUTS LOKAL (buat upload artifact CI) =====
+    save_json(metrics, os.path.join(out_dir, "metrics.json"))
 
-        print("✅ Training selesai.")
-        print("Metrics:", metrics)
-        print("Outputs saved to:", args.out_dir)
+    # Simpan RUN_ID biar workflow gampang ambil untuk build docker
+    run_id = os.environ.get("MLFLOW_RUN_ID", "")
+    with open(os.path.join(out_dir, "run_id.txt"), "w", encoding="utf-8") as f:
+        f.write(run_id)
 
-    finally:
-        # kalau kita yang start_run (attached maupun fallback), tetap end_run biar clean
-        mlflow.end_run()
-
+    print("✅ Training done. Metrics:", metrics)
+    print("✅ RUN_ID:", run_id)
 
 if __name__ == "__main__":
     main()
