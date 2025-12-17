@@ -15,30 +15,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ✅ Install Miniconda (tanpa python-version & activate env)
       - name: Setup Miniconda
         uses: conda-incubator/setup-miniconda@v3
         with:
           auto-update-conda: true
           use-mamba: true
 
+      # ✅ penting: pastikan bash membaca environment conda
+      - name: Show conda info
+        shell: bash -l {0}
+        run: |
+          which conda
+          conda --version
+          conda info
+
+      
       - name: Install MLflow (runner)
         shell: bash -l {0}
         run: |
           python -m pip install --upgrade pip
           pip install mlflow==2.19.0
 
-      - name: Debug structure
+    
+      - name: Run MLflow Project (retrain)
         shell: bash -l {0}
+        env:
+          MLFLOW_CONDA_HOME: /usr/share/miniconda
         run: |
+          echo "MLFLOW_CONDA_HOME=$MLFLOW_CONDA_HOME"
           ls -la
           ls -la MLProject
           ls -la MLProject/german_credit_data_preprocessing
 
-      # ✅ MLflow akan create & activate env dari conda.yaml sendiri
-      - name: Run MLflow Project (retrain)
-        shell: bash -l {0}
-        run: |
           mlflow run ./MLProject \
             -P data_dir=./MLProject/german_credit_data_preprocessing \
             -P out_dir=./outputs
