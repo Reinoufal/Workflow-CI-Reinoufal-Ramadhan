@@ -13,29 +13,30 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ✅ Setup conda (menghindari error "activate: No such file or directory")
+      # ✅ Install Miniconda (tanpa python-version agar tidak kena validasi input v3)
       - name: Setup Miniconda
         uses: conda-incubator/setup-miniconda@v3
         with:
           auto-activate-base: false
-          activate-environment: ""
           miniconda-version: "latest"
-          python-version: "3.12"
 
-      - name: Show conda info
+      # ✅ Create env dari conda.yaml milik MLProject
+      - name: Create conda env (from conda.yaml)
         shell: bash -l {0}
         run: |
-          conda --version
-          python --version
+          conda env create -f MLProject/conda.yaml -n ci-mlflow
+          conda info -a
 
-      # ✅ Install MLflow on runner (untuk menjalankan `mlflow run`)
+      # ✅ Activate env + install mlflow runner (agar bisa `mlflow run`)
       - name: Install MLflow (runner)
         shell: bash -l {0}
         run: |
+          conda activate ci-mlflow
           python -m pip install --upgrade pip
           pip install mlflow==2.19.0
+          python --version
+          mlflow --version
 
-      # (opsional) debug struktur repo
       - name: Debug structure
         shell: bash -l {0}
         run: |
@@ -43,49 +44,17 @@ jobs:
           ls -la MLProject || true
           ls -la MLProject/german_credit_data_preprocessing || true
 
-      # ✅ Run MLflow Project (retrain)
       - name: Run MLflow Project (retrain)
         shell: bash -l {0}
         run: |
+          conda activate ci-mlflow
           rm -rf outputs
           mlflow run MLProject \
             -P data_dir=MLProject/german_credit_data_preprocessing \
             -P out_dir=outputs
 
-      # ✅ Upload outputs (Skilled requirement: simpan artefak ke repo storage)
       - name: Upload outputs artifact
         uses: actions/upload-artifact@v4
         with:
           name: outputs
           path: outputs
-
-      # ✅ Build Docker image from MLflow model (Advance)
-      # NOTE: model hasil mlflow autolog disimpan di mlruns. Kita cari run terakhir dari mlruns.
-      - name: Get latest run_id
-        shell: bash -l {0}
-        run: |
-          RUN_ID=$(ls -td mlruns/*/*/ | head -n 1 | awk -F'/' '{print $(NF-1)}')
-          echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
-          echo "Latest RUN_ID: $RUN_ID"
-
-      - name: Build Docker image (mlflow models build-docker)
-        shell: bash -l {0}
-        run: |
-          # Model autolog biasanya tersimpan di: runs:/<RUN_ID>/model
-          mlflow models build-docker -m "runs:/${RUN_ID}/model" -n "german-credit-mlflow-ci"
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Tag Docker image
-        shell: bash -l {0}
-        run: |
-          docker tag german-credit-mlflow-ci:latest reinoufalramadhan/german-credit-mlflow-ci:latest
-
-      - name: Push Docker image
-        shell: bash -l {0}
-        run: |
-          docker push reinoufalramadhan/german-credit-mlflow-ci:latest
