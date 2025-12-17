@@ -1,4 +1,4 @@
-name: german_credit_ci_project
+name: german-credit-ci
 
 conda_env: conda.yaml
 
