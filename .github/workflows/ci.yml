@@ -1,4 +1,4 @@
-name: CI Retraining with MLflow Project
+name: CI Retraining with MLflow Project + Docker
 
 on:
   push:
@@ -16,43 +16,79 @@ jobs:
       - name: Setup Miniconda
         uses: conda-incubator/setup-miniconda@v3
         with:
-          auto-activate-base: false
-          activate-environment: ci-mlflow
-          python-version: "3.12"
-          channels: conda-forge
-          channel-priority: strict
+          auto-update-conda: true
+          activate-environment: ci-env
+          python-version: "3.12.7"
 
-      - name: Check env
+      - name: Check Env
         shell: bash -l {0}
         run: |
-          conda info
           python --version
+          conda info
+          conda env list
 
-      - name: Install dependencies (runner)
+      - name: Install MLflow (runner)
         shell: bash -l {0}
         run: |
-          pip install --upgrade pip
-          pip install mlflow==2.19.0
+          python -m pip install --upgrade pip
+          pip install "mlflow==2.19.0"
 
       - name: Debug structure
         shell: bash -l {0}
         run: |
           ls -la
           ls -la MLProject
-          ls -la MLProject/german_credit_data_preprocessing
+          ls -la MLProject/german_credit_data_preprocessing || true
 
       - name: Run MLflow Project (retrain)
         shell: bash -l {0}
         run: |
-          rm -rf outputs
           mkdir -p outputs
-
+          # jalankan project + simpan log untuk ambil RUN_ID
           mlflow run MLProject \
-            -P data_dir=MLProject/german_credit_data_preprocessing \
-            -P out_dir=outputs
+            -P data_dir="${{ github.workspace }}/MLProject/german_credit_data_preprocessing" \
+            -P out_dir="${{ github.workspace }}/outputs" 2>&1 | tee mlflow_run.log
+
+      - name: Get latest MLflow run_id
+        shell: bash -l {0}
+        run: |
+          # Ambil RUN_ID dari log mlflow run (format: run with ID 'xxxxx')
+          RUN_ID=$(grep -oP "run with ID '\K[0-9a-f]{32}" mlflow_run.log | tail -n 1)
+          echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
+          echo "Detected RUN_ID: $RUN_ID"
 
       - name: Upload outputs artifact
         uses: actions/upload-artifact@v4
         with:
           name: outputs
           path: outputs
+
+      - name: Build Docker Model (mlflow models build-docker)
+        shell: bash -l {0}
+        run: |
+          IMAGE_NAME="reinoufalramadhan/german-credit-mlflow-ci"
+          # build docker image dari model artifact path "model" yang kamu log di run tsb
+          mlflow models build-docker \
+            --model-uri "runs:/${RUN_ID}/model" \
+            --name "${IMAGE_NAME}" \
+            --env-manager conda \
+            --install-mlflow
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tag Docker image
+        shell: bash -l {0}
+        run: |
+          docker tag "${IMAGE_NAME}:latest" "${IMAGE_NAME}:${{ github.sha }}"
+          docker images | head
+
+      - name: Push Docker image
+        shell: bash -l {0}
+        run: |
+          docker push "${IMAGE_NAME}:latest"
+          docker push "${IMAGE_NAME}:${{ github.sha }}"
