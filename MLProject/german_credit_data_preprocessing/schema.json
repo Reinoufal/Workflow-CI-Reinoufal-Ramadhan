@@ -1,0 +1,23 @@
+{
+  "input_path": "/content/german_credit_data_raw.csv",
+  "target_col": "Risk",
+  "rows": 1000,
+  "n_features_raw": 9,
+  "n_features_after_onehot": 26,
+  "numerical_cols": [
+    "Age",
+    "Job",
+    "Credit amount",
+    "Duration"
+  ],
+  "categorical_cols": [
+    "Sex",
+    "Housing",
+    "Saving accounts",
+    "Checking account",
+    "Purpose"
+  ],
+  "test_size": 0.2,
+  "random_state": 42,
+  "stratify": true
+}
