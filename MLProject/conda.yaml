@@ -1,4 +1,4 @@
-name: german-credit-ci-env
+name: mlflow-project-env
 channels:
   - conda-forge
 dependencies:
@@ -6,8 +6,8 @@ dependencies:
   - pip
   - pip:
       - mlflow==2.19.0
+      - scikit-learn==1.5.2
       - numpy
       - pandas
-      - scikit-learn==1.5.2
       - matplotlib
       - joblib
