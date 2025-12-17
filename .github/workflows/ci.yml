@@ -1,4 +1,4 @@
-name: CI Retraining with MLflow Project (Advance)
+name: CI Retraining with MLflow Project
 
 on:
   push:
@@ -13,72 +13,43 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # (Opsional tapi sesuai "Check Env" di contoh Dicoding)
-      - name: Check Env (runner)
-        run: |
-          echo "Runner OS: $(uname -a)"
-          echo "PWD: $(pwd)"
-          ls -la
-
-      # Setup Miniconda (biar conda.yaml MLProject jalan mulus)
+      # Ini kunci agar conda "activate" tersedia
       - name: Setup Miniconda
         uses: conda-incubator/setup-miniconda@v3
         with:
-          auto-activate-base: false
-          miniforge-variant: Miniforge3
+          auto-update-conda: true
+          activate-environment: base
+          python-version: "3.12.7"
+          auto-activate-base: true
 
       - name: Show conda info
+        shell: bash -l {0}
         run: |
+          which conda
           conda --version
-          conda info
+          python --version
 
-      # Install MLflow (runner-level) untuk menjalankan mlflow project
+      # Install MLflow runner (untuk menjalankan mlflow run)
       - name: Install MLflow (runner)
+        shell: bash -l {0}
         run: |
           python -m pip install --upgrade pip
           pip install mlflow==2.19.0
 
-      - name: Debug structure
-        run: |
-          echo "Repo root:"
-          ls -la
-          echo "MLProject folder:"
-          ls -la MLProject
-          echo "MLProject/data folder:"
-          ls -la MLProject/german_credit_data_preprocessing
-
-      # Retrain via MLflow Project (ini memenuhi Kriteria 3 Basic)
+      # Penting: set MLFLOW_CONDA_HOME supaya MLflow tahu lokasi conda
       - name: Run MLflow Project (retrain)
+        shell: bash -l {0}
+        env:
+          MLFLOW_CONDA_HOME: /usr/share/miniconda
         run: |
-          mlflow run MLProject -P data_dir=german_credit_data_preprocessing -P out_dir=outputs
+          ls -la
+          ls -la MLProject
+          ls -la MLProject/german_credit_data_preprocessing
+          mlflow run MLProject -P data_dir=MLProject/german_credit_data_preprocessing -P out_dir=outputs
 
-      # Upload outputs (ini memenuhi Kriteria 3 Skilled)
+      # Simpan hasil outputs sebagai artifact workflow (Skilled)
       - name: Upload outputs artifact
         uses: actions/upload-artifact@v4
         with:
           name: outputs
           path: outputs
-
-      # ===== ADVANCE: Build Docker image pakai mlflow build-docker =====
-      - name: Build Docker Model (mlflow build-docker)
-        run: |
-          echo "Contents of outputs:"
-          ls -la outputs
-          echo "Contents of outputs/model:"
-          ls -la outputs/model
-
-          # Build docker image from MLflow Model directory (outputs/model must contain MLmodel)
-          mlflow models build-docker -m outputs/model -n german-credit-mlflow-ci
-
-          # Tag sesuai Docker Hub repo kamu
-          docker tag german-credit-mlflow-ci:latest reinoufalramadhan/german-credit-mlflow-ci:latest
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Push Docker Image
-        run: |
-          docker push reinoufalramadhan/german-credit-mlflow-ci:latest
