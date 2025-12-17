@@ -1,4 +1,4 @@
-name: CI Retraining with MLflow Project
+name: CI Retraining with MLflow Project + Docker
 
 on:
   push:
@@ -16,16 +16,9 @@ jobs:
       - name: Setup Miniconda
         uses: conda-incubator/setup-miniconda@v3
         with:
+          auto-activate-base: false
           activate-environment: ci-env
           python-version: "3.12.7"
-          auto-activate-base: false
-
-      - name: Check Env
-        shell: bash -l {0}
-        run: |
-          python --version
-          which python
-          conda info
 
       - name: Install MLflow (runner)
         shell: bash -l {0}
@@ -36,18 +29,35 @@ jobs:
       - name: Debug structure
         shell: bash -l {0}
         run: |
+          pwd
           ls -la
           ls -la MLProject
           ls -la MLProject/german_credit_data_preprocessing
 
-      - name: Run MLflow Project (retrain)
+      - name: Run MLflow Project (retrain) + capture RUN_ID
         shell: bash -l {0}
         run: |
+          # Pastikan outputs ada di root workspace
+          rm -rf outputs
           mkdir -p outputs
+
+          # Jalankan mlflow run dan simpan log
           mlflow run MLProject \
             -P data_dir=MLProject/german_credit_data_preprocessing \
             -P out_dir=outputs \
-            --env-manager=conda
+            --env-manager=conda 2>&1 | tee mlflow_run.log
+
+          # Ambil RUN_ID dari log (format: Run (ID 'xxxx') succeeded)
+          RUN_ID=$(grep -oP "Run \(ID '\K[0-9a-f]{32}" mlflow_run.log | tail -n 1)
+          echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
+          echo "Detected RUN_ID: $RUN_ID"
+
+          # Simpan juga ke file supaya gampang dicek
+          echo "$RUN_ID" > outputs/run_id.txt
+
+          # Verifikasi outputs ada isinya
+          echo "Outputs dir content:"
+          ls -la outputs
 
       - name: Upload outputs artifact
         uses: actions/upload-artifact@v4
@@ -55,23 +65,18 @@ jobs:
           name: outputs
           path: outputs
 
-      # ===== DOCKER BUILD (ADVANCE) =====
-      - name: Read RUN_ID
-        id: runid
-        shell: bash -l {0}
-        run: |
-          echo "RUN_ID=$(cat outputs/run_id.txt)" >> $GITHUB_OUTPUT
-          echo "Run ID is: $(cat outputs/run_id.txt)"
-
       - name: Build Docker image from MLflow model
         shell: bash -l {0}
         run: |
+          echo "Using RUN_ID=$RUN_ID"
+          test -n "$RUN_ID"
+
           mlflow models build-docker \
-            --model-uri "runs:/${{ steps.runid.outputs.RUN_ID }}/model" \
+            --model-uri "runs:/$RUN_ID/model" \
             --name "reinoufalramadhan/german-credit-mlflow-ci:latest" \
             --env-manager virtualenv
 
-      - name: Login to Docker Hub
+      - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
