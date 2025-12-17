@@ -13,42 +13,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ✅ Install Miniconda (tanpa python-version agar tidak kena validasi input v3)
       - name: Setup Miniconda
         uses: conda-incubator/setup-miniconda@v3
         with:
           auto-activate-base: false
-          miniconda-version: "latest"
+          activate-environment: ci-mlflow
+          python-version: "3.12"
+          channels: conda-forge
+          channel-priority: strict
 
-      # ✅ Create env dari conda.yaml milik MLProject
-      - name: Create conda env (from conda.yaml)
+      - name: Check env
         shell: bash -l {0}
         run: |
-          conda env create -f MLProject/conda.yaml -n ci-mlflow
-          conda info -a
-
-      # ✅ Activate env + install mlflow runner (agar bisa `mlflow run`)
-      - name: Install MLflow (runner)
-        shell: bash -l {0}
-        run: |
-          conda activate ci-mlflow
-          python -m pip install --upgrade pip
-          pip install mlflow==2.19.0
+          conda info
           python --version
-          mlflow --version
+
+      - name: Install dependencies (runner)
+        shell: bash -l {0}
+        run: |
+          pip install --upgrade pip
+          pip install mlflow==2.19.0
 
       - name: Debug structure
         shell: bash -l {0}
         run: |
           ls -la
-          ls -la MLProject || true
-          ls -la MLProject/german_credit_data_preprocessing || true
+          ls -la MLProject
+          ls -la MLProject/german_credit_data_preprocessing
 
       - name: Run MLflow Project (retrain)
         shell: bash -l {0}
         run: |
-          conda activate ci-mlflow
           rm -rf outputs
+          mkdir -p outputs
+
           mlflow run MLProject \
             -P data_dir=MLProject/german_credit_data_preprocessing \
             -P out_dir=outputs
