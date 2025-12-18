@@ -1,10 +1,10 @@
-name: german-credit-ci
+name: german-credit-mlflow
 
 conda_env: conda.yaml
 
 entry_points:
   main:
     parameters:
-      data_dir: {type: path}
-      out_dir: {type: string}
-    command: "python modelling.py --data-dir {data_dir} --out-dir {out_dir}"
+      data_dir: {type: str, default: "german_credit_data_preprocessing"}
+      out_dir: {type: str, default: "outputs"}
+    command: "python modelling.py --data_dir {data_dir} --out_dir {out_dir}"
