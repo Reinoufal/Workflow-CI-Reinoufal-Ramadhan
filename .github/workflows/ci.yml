@@ -10,9 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # GANTI: image di Docker Hub kamu
       IMAGE_NAME: reinoufalramadhan/german-credit-mlflow-ci:latest
-      # GANTI: nama folder dataset preprocessing di dalam MLProject/
       DATASET_DIR: german_credit_data_preprocessing
 
     steps:
@@ -33,37 +31,28 @@ jobs:
         shell: bash
         run: |
           set -e
-          echo "Repo root:"
           ls -la
-
           test -d MLProject
-          echo "MLProject folder:"
           ls -la MLProject
 
-          # WAJIB: file MLproject (p kecil)
           test -f MLProject/MLproject
           test -f MLProject/modelling.py
           test -f MLProject/conda.yaml
 
-          # Dataset preprocessing
           test -d "MLProject/${DATASET_DIR}"
 
-          # Biar fleksibel, file train bisa npy atau csv (cek salah satu)
           if [ ! -f "MLProject/${DATASET_DIR}/X_train.npy" ] && [ ! -f "MLProject/${DATASET_DIR}/X_train.csv" ]; then
             echo "❌ Tidak menemukan X_train.npy atau X_train.csv di MLProject/${DATASET_DIR}"
             exit 1
           fi
 
-      - name: Retrain via MLflow Project + capture RUN_ID (robust)
+      - name: Retrain via MLflow Project
         shell: bash
         run: |
           set -e
           mkdir -p outputs
-
-          # Simpan tracking store + artifacts di workspace supaya bisa di-upload
           export MLFLOW_TRACKING_URI="file://$GITHUB_WORKSPACE/mlruns"
 
-          # Jalankan MLflow project di folder MLProject
           mlflow run MLProject -e main --env-manager local \
             -P data_dir="${DATASET_DIR}" \
             -P out_dir="$GITHUB_WORKSPACE/outputs"
@@ -71,40 +60,32 @@ jobs:
           echo "===== outputs ====="
           ls -la outputs || true
 
-          echo "===== mlruns (top-level) ====="
+          echo "===== mlruns ====="
           ls -la mlruns || true
 
-          # Ambil RUN_ID terbaru dari experiment 0 (default) secara robust
-          python - << 'PY'
-import os, glob
+      - name: Capture RUN_ID from mlruns
+        shell: bash
+        run: |
+          set -e
 
-base = "mlruns"
-exp = os.path.join(base, "0")
-if not os.path.isdir(exp):
-    raise SystemExit("No experiment folder mlruns/0 found. Training likely didn't log to MLflow file store.")
+          # Pastikan experiment default ada
+          test -d "mlruns/0"
 
-runs = [p for p in glob.glob(os.path.join(exp, "*")) if os.path.isdir(p)]
-# Filter folder run (biasanya 32 hex chars)
-runs = [r for r in runs if len(os.path.basename(r)) == 32]
+          # Ambil folder run terbaru (folder 32 char) berdasarkan timestamp
+          RUN_ID=$(ls -1t mlruns/0 | grep -E '^[0-9a-f]{32}$' | head -n 1 || true)
 
-if not runs:
-    raise SystemExit("No runs found under mlruns/0. Training likely didn't create a run in the file store.")
-
-runs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-run_id = os.path.basename(runs[0])
-
-print("Detected RUN_ID:", run_id)
-
-os.makedirs("outputs", exist_ok=True)
-with open("outputs/run_id.txt", "w") as f:
-    f.write(run_id)
-
-with open(os.environ["GITHUB_ENV"], "a") as f:
-    f.write(f"RUN_ID={run_id}\n")
-PY
+          if [ -z "$RUN_ID" ]; then
+            echo "❌ RUN_ID tidak ditemukan di mlruns/0"
+            echo "Isi mlruns/0:"
+            ls -la mlruns/0 || true
+            exit 1
+          fi
 
           echo "RUN_ID=$RUN_ID"
-          test -n "$RUN_ID"
+          echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
+
+          mkdir -p outputs
+          echo "$RUN_ID" > outputs/run_id.txt
 
       - name: Upload outputs artifact (run_id + any metrics)
         uses: actions/upload-artifact@v4
@@ -123,14 +104,11 @@ PY
         run: |
           set -e
           test -n "$RUN_ID"
-
           export MLFLOW_TRACKING_URI="file://$GITHUB_WORKSPACE/mlruns"
-          mkdir -p exported_model
 
-          # Download artifacts "model" dari RUN_ID ke exported_model/model
+          mkdir -p exported_model
           mlflow artifacts download -r "$RUN_ID" -a "model" -d exported_model/model
 
-          echo "===== exported_model/model ====="
           ls -la exported_model/model
           test -f exported_model/model/MLmodel
 
@@ -139,8 +117,6 @@ PY
         with:
           name: exported_model
           path: exported_model
-
-      # ===================== Docker build & push =====================
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -158,7 +134,6 @@ PY
           test -n "$RUN_ID"
           export MLFLOW_TRACKING_URI="file://$GITHUB_WORKSPACE/mlruns"
 
-          echo "Building docker image from RUN_ID=$RUN_ID"
           mlflow models build-docker \
             --model-uri "runs:/$RUN_ID/model" \
             --name "${IMAGE_NAME}" \
