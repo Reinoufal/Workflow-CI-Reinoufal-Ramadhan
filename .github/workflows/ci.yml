@@ -2,7 +2,7 @@ name: CI Retraining with MLflow Project + Docker
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 jobs:
@@ -13,61 +13,109 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Miniconda
-        uses: conda-incubator/setup-miniconda@v3
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          auto-activate-base: false
-          activate-environment: ci-env
-          python-version: "3.12.7"
+          python-version: "3.10"
 
-      - name: Install MLflow (runner)
-        shell: bash -l {0}
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install mlflow==2.19.0
+          pip install \
+            mlflow==2.19.0 \
+            scikit-learn==1.5.2 \
+            numpy pandas matplotlib joblib
 
-      - name: Debug structure
-        shell: bash -l {0}
+      - name: Detect data_dir automatically
+        shell: bash
         run: |
-          pwd
-          ls -la
-          ls -la MLProject
-          ls -la MLProject/german_credit_data_preprocessing
+          set -e
+          # Prioritas:
+          # 1) folder bernama german_credit_data_preprocessing
+          # 2) folder lain yang punya X_train.npy
+          # 3) root repo kalau X_train.npy ada di root
+          DATA_DIR=""
+          if [ -d "german_credit_data_preprocessing" ] && [ -f "german_credit_data_preprocessing/X_train.npy" ]; then
+            DATA_DIR="german_credit_data_preprocessing"
+          elif [ -f "X_train.npy" ]; then
+            DATA_DIR="."
+          else
+            FOUND_DIR=$(find . -name "X_train.npy" -printf "%h\n" | head -n 1 || true)
+            if [ -n "$FOUND_DIR" ]; then
+              DATA_DIR="$FOUND_DIR"
+            fi
+          fi
+
+          if [ -z "$DATA_DIR" ]; then
+            echo "❌ Tidak menemukan X_train.npy. Pastikan dataset preprocessing ikut ada di repo."
+            exit 1
+          fi
+
+          echo "✅ DATA_DIR=$DATA_DIR"
+          echo "DATA_DIR=$DATA_DIR" >> $GITHUB_ENV
 
       - name: Run MLflow Project (retrain) + capture RUN_ID
-        shell: bash -l {0}
+        shell: bash
         run: |
-          # Pastikan outputs ada di root workspace
-          rm -rf outputs
+          set -e
           mkdir -p outputs
 
-          # Jalankan mlflow run dan simpan log
-          mlflow run MLProject \
-            -P data_dir=MLProject/german_credit_data_preprocessing \
-            -P out_dir=outputs \
-            --env-manager=conda 2>&1 | tee mlflow_run.log
+          # Pastikan MLflow file-store ditaruh di workspace supaya gampang di-upload
+          export MLFLOW_TRACKING_URI="file://$GITHUB_WORKSPACE/mlruns"
 
-          # Ambil RUN_ID dari log (format: Run (ID 'xxxx') succeeded)
-          RUN_ID=$(grep -oP "Run \(ID '\K[0-9a-f]{32}" mlflow_run.log | tail -n 1)
-          echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
-          echo "Detected RUN_ID: $RUN_ID"
+          # Jalankan MLflow Project di root repo (file MLProject ada di root)
+          # Pakai env-manager local supaya tidak bikin conda env di runner
+          mlflow run . -e main --env-manager local \
+            -P data_dir="$DATA_DIR" \
+            -P out_dir="outputs"
 
-          # Simpan juga ke file supaya gampang dicek
-          echo "$RUN_ID" > outputs/run_id.txt
-
-          # Verifikasi outputs ada isinya
-          echo "Outputs dir content:"
+          echo "===== outputs ====="
           ls -la outputs
+          echo "===== mlruns (top-level) ====="
+          ls -la mlruns || true
 
-      - name: Upload outputs artifact
+          # Ambil RUN_ID dari file output modelling.py
+          RUN_ID=$(cat outputs/run_id.txt)
+          echo "✅ RUN_ID=$RUN_ID"
+          echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
+
+      - name: Upload outputs artifact (run_id + metrics)
         uses: actions/upload-artifact@v4
         with:
           name: outputs
           path: outputs
 
-      - name: Build Docker image from MLflow model
-        shell: bash -l {0}
+      - name: Upload mlruns artifact (MLflow tracking store + model)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlruns
+          path: mlruns
+
+      - name: Export model artifact (portable folder)
+        shell: bash
         run: |
+          set -e
+          export MLFLOW_TRACKING_URI="file://$GITHUB_WORKSPACE/mlruns"
+          mkdir -p exported_model
+
+          # Download artifacts "model" dari RUN_ID ke folder exported_model/model
+          mlflow artifacts download -r "$RUN_ID" -a "model" -d exported_model/model
+
+          echo "===== exported_model/model ====="
+          ls -la exported_model/model
+          test -f exported_model/model/MLmodel
+
+      - name: Upload exported model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: exported_model
+          path: exported_model
+
+      - name: Build Docker image from MLflow model
+        shell: bash
+        run: |
+          set -e
+          export MLFLOW_TRACKING_URI="file://$GITHUB_WORKSPACE/mlruns"
           echo "Using RUN_ID=$RUN_ID"
           test -n "$RUN_ID"
 
@@ -83,6 +131,6 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Push Docker image
-        shell: bash -l {0}
+        shell: bash
         run: |
           docker push reinoufalramadhan/german-credit-mlflow-ci:latest
