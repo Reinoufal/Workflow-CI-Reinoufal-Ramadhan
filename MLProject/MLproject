@@ -7,4 +7,4 @@ entry_points:
     parameters:
       data_dir: {type: str, default: "german_credit_data_preprocessing"}
       out_dir: {type: str, default: "outputs"}
-    command: "python modelling.py --data_dir {data_dir} --out_dir {out_dir}"
+    command: "python modelling.py --data-dir {data_dir} --out-dir {out_dir}"
