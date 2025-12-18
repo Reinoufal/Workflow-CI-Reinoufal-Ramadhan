@@ -10,9 +10,9 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # Ganti ini sesuai repo docker hub kamu (format: username/repo:tag)
-      IMAGE_NAME: reinoufal/german-credit-mlflow-ci:latest
-      # Nama folder dataset preprocessing kamu di dalam MLProject/
+      # GANTI: image di Docker Hub kamu
+      IMAGE_NAME: reinoufalramadhan/german-credit-mlflow-ci:latest
+      # GANTI: nama folder dataset preprocessing di dalam MLProject/
       DATASET_DIR: german_credit_data_preprocessing
 
     steps:
@@ -45,34 +45,68 @@ jobs:
           test -f MLProject/modelling.py
           test -f MLProject/conda.yaml
 
-          # Dataset preprocessing (sesuaikan dengan env DATASET_DIR)
+          # Dataset preprocessing
           test -d "MLProject/${DATASET_DIR}"
-          test -f "MLProject/${DATASET_DIR}/X_train.npy" || true
-          test -f "MLProject/${DATASET_DIR}/X_train.csv" || true
 
-      - name: Retrain via MLflow Project + capture RUN_ID
+          # Biar fleksibel, file train bisa npy atau csv (cek salah satu)
+          if [ ! -f "MLProject/${DATASET_DIR}/X_train.npy" ] && [ ! -f "MLProject/${DATASET_DIR}/X_train.csv" ]; then
+            echo "❌ Tidak menemukan X_train.npy atau X_train.csv di MLProject/${DATASET_DIR}"
+            exit 1
+          fi
+
+      - name: Retrain via MLflow Project + capture RUN_ID (robust)
         shell: bash
         run: |
           set -e
           mkdir -p outputs
 
-          # Simpan tracking store + artifacts di workspace agar bisa di-upload
+          # Simpan tracking store + artifacts di workspace supaya bisa di-upload
           export MLFLOW_TRACKING_URI="file://$GITHUB_WORKSPACE/mlruns"
 
-          # Jalankan MLflow project yang berada di folder MLProject
+          # Jalankan MLflow project di folder MLProject
           mlflow run MLProject -e main --env-manager local \
             -P data_dir="${DATASET_DIR}" \
             -P out_dir="$GITHUB_WORKSPACE/outputs"
 
           echo "===== outputs ====="
-          ls -la outputs
+          ls -la outputs || true
 
-          # modelling.py harus menulis run_id ke outputs/run_id.txt (sesuai yang kamu sudah lakukan)
-          RUN_ID=$(cat outputs/run_id.txt)
+          echo "===== mlruns (top-level) ====="
+          ls -la mlruns || true
+
+          # Ambil RUN_ID terbaru dari experiment 0 (default) secara robust
+          python - << 'PY'
+import os, glob
+
+base = "mlruns"
+exp = os.path.join(base, "0")
+if not os.path.isdir(exp):
+    raise SystemExit("No experiment folder mlruns/0 found. Training likely didn't log to MLflow file store.")
+
+runs = [p for p in glob.glob(os.path.join(exp, "*")) if os.path.isdir(p)]
+# Filter folder run (biasanya 32 hex chars)
+runs = [r for r in runs if len(os.path.basename(r)) == 32]
+
+if not runs:
+    raise SystemExit("No runs found under mlruns/0. Training likely didn't create a run in the file store.")
+
+runs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+run_id = os.path.basename(runs[0])
+
+print("Detected RUN_ID:", run_id)
+
+os.makedirs("outputs", exist_ok=True)
+with open("outputs/run_id.txt", "w") as f:
+    f.write(run_id)
+
+with open(os.environ["GITHUB_ENV"], "a") as f:
+    f.write(f"RUN_ID={run_id}\n")
+PY
+
           echo "RUN_ID=$RUN_ID"
-          echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
+          test -n "$RUN_ID"
 
-      - name: Upload outputs artifact (run_id + metrics)
+      - name: Upload outputs artifact (run_id + any metrics)
         uses: actions/upload-artifact@v4
         with:
           name: outputs
@@ -88,6 +122,8 @@ jobs:
         shell: bash
         run: |
           set -e
+          test -n "$RUN_ID"
+
           export MLFLOW_TRACKING_URI="file://$GITHUB_WORKSPACE/mlruns"
           mkdir -p exported_model
 
@@ -119,11 +155,10 @@ jobs:
         shell: bash
         run: |
           set -e
-          export MLFLOW_TRACKING_URI="file://$GITHUB_WORKSPACE/mlruns"
-          echo "Using RUN_ID=$RUN_ID"
           test -n "$RUN_ID"
+          export MLFLOW_TRACKING_URI="file://$GITHUB_WORKSPACE/mlruns"
 
-          # Build image dari model MLflow
+          echo "Building docker image from RUN_ID=$RUN_ID"
           mlflow models build-docker \
             --model-uri "runs:/$RUN_ID/model" \
             --name "${IMAGE_NAME}" \
