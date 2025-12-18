@@ -67,16 +67,12 @@ jobs:
         shell: bash
         run: |
           set -e
-
-          # Pastikan experiment default ada
           test -d "mlruns/0"
 
-          # Ambil folder run terbaru (folder 32 char) berdasarkan timestamp
           RUN_ID=$(ls -1t mlruns/0 | grep -E '^[0-9a-f]{32}$' | head -n 1 || true)
 
           if [ -z "$RUN_ID" ]; then
             echo "❌ RUN_ID tidak ditemukan di mlruns/0"
-            echo "Isi mlruns/0:"
             ls -la mlruns/0 || true
             exit 1
           fi
@@ -107,8 +103,10 @@ jobs:
           export MLFLOW_TRACKING_URI="file://$GITHUB_WORKSPACE/mlruns"
 
           mkdir -p exported_model
-          mlflow artifacts download -r "$RUN_ID" -a "model" -d exported_model/model
+          # FIX: download ke exported_model (hasilnya exported_model/model/...)
+          mlflow artifacts download -r "$RUN_ID" -a "model" -d exported_model
 
+          echo "===== exported_model/model ====="
           ls -la exported_model/model
           test -f exported_model/model/MLmodel
 
